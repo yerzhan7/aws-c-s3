@@ -52,10 +52,15 @@ struct aws_s3_buffer_pool_reserve_meta {
     /* size of the buffer to reserve. */
     size_t size;
 
-    /* whether not granting reservation can result in request pipeline being blocked.
-     * Note: blocking is currently a terminal condition and that cannot be recovered from,
-     * i.e. meta request will be stuck and not make any process.
-     * As such buffer pool should either grant or error out reservation in sync.
+    /* Whether the requester is on a write path where failure to grant a buffer would
+     * stall the user's poll_write call. The pool MAY grant synchronously (recommended
+     * for the default pool to preserve the legacy behaviour and avoid the deadlock
+     * scenario in test_s3_many_async_uploads_without_data) OR asynchronously: the CRT
+     * will park a waker on the returned future and re-poll the user when it resolves.
+     * If the pool defers, it MUST eventually fulfil the future or complete it with an
+     * error (`aws_future_s3_buffer_ticket_set_error`) — forward progress is the pool's
+     * responsibility once it accepts a deferred reservation.
+     *
      * This scenario currently only occurs in the async_write flows. */
     bool can_block;
 };
