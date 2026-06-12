@@ -265,9 +265,17 @@ struct aws_s3_meta_request {
             struct aws_byte_buf buffered_data;
             struct aws_s3_buffer_ticket *buffered_data_ticket;
 
+            /* Set while a buffer reservation is in flight (the pool returned an
+             * unfulfilled future). NULL otherwise. We hold a refcount on this future from
+             * the moment we register a callback on it until the callback fires; the
+             * callback either claims the buffer into `buffered_data_ticket` or fails the
+             * meta-request with the future's error. */
+            struct aws_future_s3_buffer_ticket *pending_buffer_future;
+
             /* Waker callback.
-             * Stored if a poll_write() call returns result.is_pending
-             * because we already had 1 part's worth of data.
+             * Stored if a poll_write() call returns result.is_pending,
+             * either because we already had 1 part's worth of data or because the
+             * buffer reservation is still pending.
              * Invoked when we're ready to accept another poll_write() call. */
             aws_simple_completion_callback *waker;
             void *waker_user_data;
