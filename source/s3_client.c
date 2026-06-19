@@ -1330,11 +1330,42 @@ static struct aws_s3_meta_request *s_s3_client_meta_request_factory_default(
     if (options->send_async_stream != NULL) {
         ++body_source_count;
     }
+    if (options->request_body.ptr != NULL) {
+        /* Zero-copy: caller donated a buffer holding the whole body. Requires a known Content-Length,
+         * and is only supported on the DEFAULT (single-request, non-multipart) meta request path. */
+        if (!content_length_found) {
+            AWS_LOGF_ERROR(
+                AWS_LS_S3_META_REQUEST,
+                "Could not create meta request."
+                " request_body requires the Content-Length header to be set.");
+            aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+            return NULL;
+        }
+        if (options->request_body.len != content_length) {
+            AWS_LOGF_ERROR(
+                AWS_LS_S3_META_REQUEST,
+                "Could not create meta request."
+                " request_body length (%zu) does not match the Content-Length header (%" PRIu64 ").",
+                options->request_body.len,
+                content_length);
+            aws_raise_error(AWS_ERROR_S3_INCORRECT_CONTENT_LENGTH);
+            return NULL;
+        }
+        if (options->type != AWS_S3_META_REQUEST_TYPE_DEFAULT) {
+            AWS_LOGF_ERROR(
+                AWS_LS_S3_META_REQUEST,
+                "Could not create meta request."
+                " request_body is only supported for DEFAULT meta requests.");
+            aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+            return NULL;
+        }
+        ++body_source_count;
+    }
     if (body_source_count > 1) {
         AWS_LOGF_ERROR(
             AWS_LS_S3_META_REQUEST,
             "Could not create meta request."
-            " More than one data source is set (filepath, async stream, body stream, data writes).");
+            " More than one data source is set (filepath, async stream, body stream, data writes, request_body).");
         aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
         return NULL;
     }
