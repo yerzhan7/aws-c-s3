@@ -369,6 +369,11 @@ void aws_s3_calculate_auto_ranged_get_part_range(
 AWS_S3_API
 int aws_s3_crt_error_code_from_recoverable_server_error_code_string(struct aws_byte_cursor error_code_string);
 
+/* Returns true if the CRT error code is one that the client maps a retry-able S3 error response to, such as
+ * AWS_ERROR_S3_SLOW_DOWN for a 503. */
+AWS_S3_API
+bool aws_s3_crt_error_code_is_recoverable_server_error(int error_code);
+
 AWS_S3_API
 void aws_s3_request_finish_up_metrics_synced(struct aws_s3_request *request, struct aws_s3_meta_request *meta_request);
 

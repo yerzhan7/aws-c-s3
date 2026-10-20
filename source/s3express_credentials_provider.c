@@ -329,8 +329,11 @@ static void s_on_request_finished(
         aws_error_debug_str(error_code));
 
     if (error_code && meta_request_result->error_response_body && meta_request_result->error_response_body->len > 0) {
-        /* The Create Session failed with an error response from S3, provide a specific error code for user. */
-        error_code = AWS_ERROR_S3EXPRESS_CREATE_SESSION_FAILED;
+        /* The Create Session failed with an error response from S3, provide a specific error code for user. Keep a
+         * retry-able one, such as AWS_ERROR_S3_SLOW_DOWN, which already says what S3 kept responding with. */
+        if (!aws_s3_crt_error_code_is_recoverable_server_error(error_code)) {
+            error_code = AWS_ERROR_S3EXPRESS_CREATE_SESSION_FAILED;
+        }
         AWS_LOGF_ERROR(
             AWS_LS_AUTH_CREDENTIALS_PROVIDER,
             "(id=%p): CreateSession call failed with http status: %d, and error response body is: %.*s",

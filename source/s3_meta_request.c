@@ -865,6 +865,21 @@ int aws_s3_meta_request_pause_async(
     return AWS_OP_SUCCESS;
 }
 
+/* Returns true if the request failed because of the error response S3 sent it, so that response belongs in the meta
+ * request result. */
+static bool s_s3_request_failed_with_error_response(const struct aws_s3_request *failed_request, int error_code) {
+    if (error_code == AWS_ERROR_S3_INVALID_RESPONSE_STATUS || error_code == AWS_ERROR_S3_NON_RECOVERABLE_ASYNC_ERROR ||
+        error_code == AWS_ERROR_S3_OBJECT_MODIFIED) {
+        return true;
+    }
+
+    /* A retry-able error response that is not retried again, because the retry strategy declined. Check that this
+     * request got the response: the same error codes can reach a request from elsewhere, such as from a CreateSession
+     * that failed while the request was being signed. */
+    return aws_s3_crt_error_code_is_recoverable_server_error(error_code) &&
+           failed_request->send_data.response_status != 0;
+}
+
 void aws_s3_meta_request_set_fail_synced(
     struct aws_s3_meta_request *meta_request,
     struct aws_s3_request *failed_request,
@@ -888,19 +903,19 @@ void aws_s3_meta_request_set_fail_synced(
 
     meta_request->synced_data.finish_result_set = true;
 
-    if ((error_code == AWS_ERROR_S3_INVALID_RESPONSE_STATUS || error_code == AWS_ERROR_S3_NON_RECOVERABLE_ASYNC_ERROR ||
-         error_code == AWS_ERROR_S3_OBJECT_MODIFIED) &&
-        failed_request != NULL) {
+    struct aws_s3_meta_request_result *finish_result = &meta_request->synced_data.finish_result;
+
+    if (failed_request != NULL && s_s3_request_failed_with_error_response(failed_request, error_code)) {
         aws_s3_meta_request_result_setup(
-            meta_request,
-            &meta_request->synced_data.finish_result,
-            failed_request,
-            failed_request->send_data.response_status,
-            error_code);
+            meta_request, finish_result, failed_request, failed_request->send_data.response_status, error_code);
     } else {
         AWS_ASSERT(error_code != AWS_ERROR_S3_INVALID_RESPONSE_STATUS);
 
-        aws_s3_meta_request_result_setup(meta_request, &meta_request->synced_data.finish_result, NULL, 0, error_code);
+        aws_s3_meta_request_result_setup(meta_request, finish_result, NULL, 0, error_code);
+    }
+
+    if (failed_request != NULL) {
+        finish_result->retry_error_code = failed_request->retry_error_code;
     }
 }
 

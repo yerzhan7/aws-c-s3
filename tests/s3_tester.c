@@ -279,6 +279,7 @@ static void s_s3_test_meta_request_finish(
 
     meta_request_test_results->finished_response_status = result->response_status;
     meta_request_test_results->finished_error_code = result->error_code;
+    meta_request_test_results->finished_retry_error_code = result->retry_error_code;
     meta_request_test_results->did_validate = result->did_validate;
     meta_request_test_results->validation_algorithm = result->validation_algorithm;
     meta_request_test_results->recv_file_direct_io_fallback_count =
@@ -1554,6 +1555,12 @@ int aws_s3_tester_client_new(
         .memory_limit_in_bytes = options->memory_limit_in_bytes,
         .buffer_pool_factory_fn = options->buffer_pool_factory_fn,
         .out_of_order_delivery = options->out_of_order_delivery,
+        .retry_config =
+            {
+                .max_retries = options->retry_config.max_retries,
+                .backoff_scale_factor_ms = options->retry_config.backoff_scale_factor_ms,
+                .initial_bucket_capacity = options->retry_config.initial_bucket_capacity,
+            },
     };
     struct aws_http_proxy_options proxy_options = {
         .connection_type = AWS_HPCT_HTTP_FORWARD,

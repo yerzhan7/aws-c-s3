@@ -1292,8 +1292,12 @@ struct aws_s3_meta_request_options {
  * If error_code is AWS_ERROR_SUCCESS, then response_status will match the response_status passed earlier by the header
  * callback and error_response_headers and error_response_body will be NULL.
  *
- * If error_code is equal to AWS_ERROR_S3_INVALID_RESPONSE_STATUS, then error_response_headers, error_response_body, and
- * response_status will be populated by the failed request.
+ * If the meta request failed because of an error response from S3, then error_response_headers, error_response_body,
+ * error_response_operation_name and response_status will be populated by the failed request. Those are the error codes
+ * AWS_ERROR_S3_INVALID_RESPONSE_STATUS, AWS_ERROR_S3_NON_RECOVERABLE_ASYNC_ERROR and AWS_ERROR_S3_OBJECT_MODIFIED, and
+ * the error codes of responses that are retried: AWS_ERROR_S3_SLOW_DOWN, AWS_ERROR_S3_INTERNAL_ERROR,
+ * AWS_ERROR_S3_REQUEST_TIMEOUT and AWS_ERROR_S3_REQUEST_TIME_TOO_SKEWED. For a retried response, they come from the
+ * last attempt, and retry_error_code says why the request was not retried again.
  *
  * For all other error codes, response_status will be 0, and the error_response variables will be NULL.
  */
@@ -1343,6 +1347,15 @@ struct aws_s3_meta_request_result {
 
     /* Final error code of the meta request. */
     int error_code;
+
+    /* If the meta request failed because a request failed with a retryable error and the retry strategy declined to
+     * retry it again, this is the error the retry strategy declined with. With the standard retry strategy, which the
+     * client uses by default, this is either:
+     * - AWS_IO_MAX_RETRIES_EXCEEDED: the request used up all of its attempts.
+     * - AWS_IO_RETRY_PERMISSION_DENIED: the retry budget (token bucket) for the endpoint was empty, so the request
+     *   failed before using up its attempts.
+     * AWS_ERROR_SUCCESS if the meta request did not fail this way. */
+    int retry_error_code;
 };
 
 AWS_EXTERN_C_BEGIN

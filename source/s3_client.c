@@ -3072,15 +3072,24 @@ void aws_s3_client_notify_connection_finished(
         if (aws_retry_strategy_schedule_retry(
                 connection->retry_token, error_type, s_s3_client_retry_ready, connection)) {
 
+            /* Record why the request is not retried, for the meta request result. Without it, a request that used up
+             * its attempts and one the retry budget refused a retry fail with the same error_code. */
+            request->retry_error_code = aws_last_error_or_unknown();
+
             AWS_LOGF_ERROR(
                 AWS_LS_S3_CLIENT,
-                "id=%p Client could not retry request %p for meta request %p with token %p due to error %d (%s)",
+                "id=%p Client could not retry request %p for meta request %p with token %p due to error %d (%s). "
+                "Request failed with error %d (%s), response status %d, x-amz-request-id: %s",
                 (void *)client,
                 (void *)request,
                 (void *)meta_request,
                 (void *)connection->retry_token,
-                aws_last_error_or_unknown(),
-                aws_error_str(aws_last_error_or_unknown()));
+                request->retry_error_code,
+                aws_error_str(request->retry_error_code),
+                error_code,
+                aws_error_str(error_code),
+                request->send_data.response_status,
+                request->send_data.request_id ? aws_string_c_str(request->send_data.request_id) : "N/A");
 
             goto reset_connection;
         }

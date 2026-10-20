@@ -811,6 +811,18 @@ int aws_s3_crt_error_code_from_recoverable_server_error_code_string(struct aws_b
     return AWS_ERROR_UNKNOWN;
 }
 
+bool aws_s3_crt_error_code_is_recoverable_server_error(int error_code) {
+    switch (error_code) {
+        case AWS_ERROR_S3_SLOW_DOWN:
+        case AWS_ERROR_S3_INTERNAL_ERROR:
+        case AWS_ERROR_S3_REQUEST_TIME_TOO_SKEWED:
+        case AWS_ERROR_S3_REQUEST_TIMEOUT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void aws_s3_request_finish_up_metrics_synced(struct aws_s3_request *request, struct aws_s3_meta_request *meta_request) {
     AWS_PRECONDITION(meta_request);
     AWS_PRECONDITION(request);

@@ -270,6 +270,10 @@ struct aws_s3_request {
      * prepare function, this will be 0.*/
     uint32_t num_times_prepared;
 
+    /* Error the retry strategy raised when it declined to retry this request after a failed attempt, such as
+     * AWS_IO_RETRY_PERMISSION_DENIED or AWS_IO_MAX_RETRIES_EXCEEDED. AWS_ERROR_SUCCESS if it never declined. */
+    int retry_error_code;
+
     /* checksum found in the header of an individual get part http request */
     struct aws_byte_buf request_level_response_header_checksum;
 

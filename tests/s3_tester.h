@@ -150,6 +150,12 @@ struct aws_s3_tester_client_options {
     /* Passed straight through to aws_s3_client_config. AWS_TRIBOOL_UNSET (0) is the default, so a test
      * that does not set this gets whatever the client decides. */
     enum aws_tribool out_of_order_delivery;
+    /* Passed straight through to aws_s3_client_config.retry_config. 0 means the S3 client default. */
+    struct {
+        size_t max_retries;
+        uint32_t backoff_scale_factor_ms;
+        size_t initial_bucket_capacity;
+    } retry_config;
 };
 
 /* should really break this up to a client setup, and a meta_request sending */
@@ -306,6 +312,7 @@ struct aws_s3_meta_request_test_results {
     struct aws_atomic_var received_body_size_delta;
     int finished_response_status;
     int finished_error_code;
+    int finished_retry_error_code;
     enum aws_s3_checksum_algorithm algorithm;
 
     /* Record the status of checksum validation. */

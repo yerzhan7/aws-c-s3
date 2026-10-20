@@ -792,6 +792,165 @@ TEST_CASE(multipart_upload_failure_with_mock_server) {
     return AWS_OP_SUCCESS;
 }
 
+/* Upload with every UploadPart throttled until the client stops retrying, and check that the meta request reports the
+ * response to the last attempt, with the request ID that makes the failure diagnosable, and why it was not retried
+ * again. */
+static int s_test_upload_part_throttled_until_not_retried(
+    struct aws_allocator *allocator,
+    struct aws_s3_tester_client_options *client_options,
+    int expected_retry_error_code) {
+
+    struct aws_s3_tester tester;
+    ASSERT_SUCCESS(aws_s3_tester_init(allocator, &tester));
+
+    struct aws_s3_client *client = NULL;
+    ASSERT_SUCCESS(aws_s3_tester_client_new(&tester, client_options, &client));
+    struct aws_s3_client_vtable *patched_client_vtable = aws_s3_tester_patch_client_vtable(&tester, client, NULL);
+    patched_client_vtable->after_prepare_upload_part_finish_stub = s_upload_part_force_fail;
+
+    struct aws_s3_tester_meta_request_options put_options = {
+        .allocator = allocator,
+        .meta_request_type = AWS_S3_META_REQUEST_TYPE_PUT_OBJECT,
+        .client = client,
+        .put_options =
+            {
+                .object_size_mb = 10,
+                .object_path_override = aws_byte_cursor_from_c_str("/default"),
+            },
+        .mock_server = true,
+        .validate_type = AWS_S3_TESTER_VALIDATE_TYPE_EXPECT_FAILURE,
+    };
+
+    struct aws_s3_meta_request_test_results results;
+    aws_s3_meta_request_test_results_init(&results, allocator);
+    ASSERT_SUCCESS(aws_s3_tester_send_meta_request_with_options(&tester, &put_options, &results));
+
+    ASSERT_INT_EQUALS(AWS_ERROR_S3_SLOW_DOWN, results.finished_error_code);
+    ASSERT_INT_EQUALS(expected_retry_error_code, results.finished_retry_error_code);
+    ASSERT_INT_EQUALS(AWS_HTTP_STATUS_CODE_503_SERVICE_UNAVAILABLE, results.finished_response_status);
+
+    ASSERT_NOT_NULL(results.error_response_headers);
+    struct aws_byte_cursor request_id;
+    ASSERT_SUCCESS(aws_http_headers_get(
+        results.error_response_headers, aws_byte_cursor_from_c_str("x-amz-request-id"), &request_id));
+    ASSERT_CURSOR_VALUE_CSTRING_EQUALS(request_id, "656c76696e6727732072657175657374");
+
+    struct aws_byte_cursor error_body = aws_byte_cursor_from_buf(&results.error_response_body);
+    struct aws_byte_cursor slow_down = aws_byte_cursor_from_c_str("<Code>SlowDown</Code>");
+    struct aws_byte_cursor found;
+    ASSERT_SUCCESS(aws_byte_cursor_find_exact(&error_body, &slow_down, &found));
+
+    ASSERT_NOT_NULL(results.error_response_operation_name);
+    ASSERT_STR_EQUALS("UploadPart", aws_string_c_str(results.error_response_operation_name));
+
+    /* As with any other error response, the headers callback gets the response too. */
+    ASSERT_INT_EQUALS(AWS_HTTP_STATUS_CODE_503_SERVICE_UNAVAILABLE, results.headers_response_status);
+
+    aws_s3_meta_request_test_results_clean_up(&results);
+    aws_s3_client_release(client);
+    aws_s3_tester_clean_up(&tester);
+
+    return AWS_OP_SUCCESS;
+}
+
+/* The throttled UploadPart uses up its attempts. */
+TEST_CASE(multipart_upload_throttled_max_retries_exceeded_mock_server) {
+    (void)ctx;
+
+    struct aws_s3_tester_client_options client_options = {
+        .part_size = MB_TO_BYTES(5),
+        .tls_usage = AWS_S3_TLS_DISABLED,
+        .retry_config =
+            {
+                .max_retries = 1,
+                .backoff_scale_factor_ms = 1,
+            },
+    };
+
+    return s_test_upload_part_throttled_until_not_retried(allocator, &client_options, AWS_IO_MAX_RETRIES_EXCEEDED);
+}
+
+/* The throttled UploadPart is refused a retry before it uses up its attempts, because the retry budget is empty: the
+ * first throttled retry costs 5 tokens, which is the whole bucket. */
+TEST_CASE(multipart_upload_throttled_retry_budget_empty_mock_server) {
+    (void)ctx;
+
+    struct aws_s3_tester_client_options client_options = {
+        .part_size = MB_TO_BYTES(5),
+        .tls_usage = AWS_S3_TLS_DISABLED,
+        .retry_config =
+            {
+                .backoff_scale_factor_ms = 1,
+                .initial_bucket_capacity = 5,
+            },
+    };
+
+    return s_test_upload_part_throttled_until_not_retried(allocator, &client_options, AWS_IO_RETRY_PERMISSION_DENIED);
+}
+
+static void s_acquire_http_connection_always_fail(
+    struct aws_http_connection_manager *conn_manager,
+    aws_http_connection_manager_on_connection_setup_fn *callback,
+    void *user_data) {
+    (void)conn_manager;
+
+    aws_raise_error(AWS_ERROR_HTTP_UNKNOWN);
+    callback(NULL, AWS_ERROR_HTTP_UNKNOWN, user_data);
+}
+
+/* A request that fails without a response still reports why it was not retried again, and no error response. */
+TEST_CASE(multipart_upload_connection_failure_max_retries_exceeded_mock_server) {
+    (void)ctx;
+
+    struct aws_s3_tester tester;
+    ASSERT_SUCCESS(aws_s3_tester_init(allocator, &tester));
+
+    struct aws_s3_tester_client_options client_options = {
+        .part_size = MB_TO_BYTES(5),
+        .tls_usage = AWS_S3_TLS_DISABLED,
+        .retry_config =
+            {
+                .max_retries = 1,
+                .backoff_scale_factor_ms = 1,
+            },
+    };
+
+    struct aws_s3_client *client = NULL;
+    ASSERT_SUCCESS(aws_s3_tester_client_new(&tester, &client_options, &client));
+    struct aws_s3_client_vtable *patched_client_vtable = aws_s3_tester_patch_client_vtable(&tester, client, NULL);
+    patched_client_vtable->acquire_http_connection = s_acquire_http_connection_always_fail;
+
+    struct aws_s3_tester_meta_request_options put_options = {
+        .allocator = allocator,
+        .meta_request_type = AWS_S3_META_REQUEST_TYPE_PUT_OBJECT,
+        .client = client,
+        .put_options =
+            {
+                .object_size_mb = 10,
+                .object_path_override = aws_byte_cursor_from_c_str("/default"),
+            },
+        .mock_server = true,
+        .validate_type = AWS_S3_TESTER_VALIDATE_TYPE_EXPECT_FAILURE,
+    };
+
+    struct aws_s3_meta_request_test_results results;
+    aws_s3_meta_request_test_results_init(&results, allocator);
+    ASSERT_SUCCESS(aws_s3_tester_send_meta_request_with_options(&tester, &put_options, &results));
+
+    ASSERT_INT_EQUALS(AWS_ERROR_HTTP_UNKNOWN, results.finished_error_code);
+    ASSERT_INT_EQUALS(AWS_IO_MAX_RETRIES_EXCEEDED, results.finished_retry_error_code);
+    ASSERT_INT_EQUALS(0, results.finished_response_status);
+    ASSERT_NULL(results.error_response_headers);
+    ASSERT_UINT_EQUALS(0, results.error_response_body.len);
+    ASSERT_NULL(results.error_response_operation_name);
+
+    aws_s3_meta_request_test_results_clean_up(&results);
+    aws_s3_client_release(client);
+    aws_s3_tester_clean_up(&tester);
+
+    return AWS_OP_SUCCESS;
+}
+
 /* Singleton used by tests in this file */
 static struct get_requests_header_tester {
     struct aws_allocator *alloc;
