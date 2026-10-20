@@ -258,6 +258,9 @@ struct aws_s3_meta_request {
     struct aws_string *s3express_session_host;
     /* Is the meta request made to s3express bucket or not. */
     bool is_express;
+    /* Set when S3 returns part ETags that aren't an MD5 of the part data (SSE-KMS, DSSE-KMS and SSE-C uploads), so two
+     * uploads of the same part get different ETags. Only written before any UploadPart request is created. */
+    bool has_nondeterministic_part_etags;
     /* Is the meta request made over TLS (https) or plaintext (http). */
     bool is_https;
     /* If the buffer pool optimized for the specific size or not. */
@@ -611,6 +614,13 @@ void aws_s3_meta_request_prepare_request(
 
 AWS_S3_API
 void aws_s3_meta_request_send_request(struct aws_s3_meta_request *meta_request, struct aws_s3_connection *connection);
+
+/* Whether UploadPart requests may use the first-byte timeout, which gives up on a part that was fully sent and
+ * uploads it again. S3 may still complete the abandoned upload after the new one, replacing the part. That is only
+ * harmless when both uploads get the same ETag. Otherwise CompleteMultipartUpload fails with InvalidPart, as the ETag
+ * we send no longer matches the stored part. */
+AWS_S3_API
+bool aws_s3_meta_request_should_use_upload_part_timeout(const struct aws_s3_meta_request *meta_request);
 
 AWS_S3_API
 void aws_s3_meta_request_init_signing_date_time_default(

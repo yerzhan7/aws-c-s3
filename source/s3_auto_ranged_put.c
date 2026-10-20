@@ -89,6 +89,24 @@ static const struct aws_byte_cursor s_create_multipart_upload_copy_headers[] = {
     AWS_BYTE_CUR_INIT_FROM_STRING_LITERAL("x-amz-server-side-encryption-context"),
 };
 
+static const struct aws_byte_cursor s_sse_header_name =
+    AWS_BYTE_CUR_INIT_FROM_STRING_LITERAL("x-amz-server-side-encryption");
+static const struct aws_byte_cursor s_sse_customer_algorithm_header_name =
+    AWS_BYTE_CUR_INIT_FROM_STRING_LITERAL("x-amz-server-side-encryption-customer-algorithm");
+/* Prefix of both "aws:kms" (SSE-KMS) and "aws:kms:dsse" (DSSE-KMS) */
+static const struct aws_byte_cursor s_sse_kms_value_prefix = AWS_BYTE_CUR_INIT_FROM_STRING_LITERAL("aws:kms");
+
+/* S3 only returns an MD5 of the part data as ETag for unencrypted and SSE-S3 uploads.
+ * For SSE-KMS, DSSE-KMS and SSE-C, each upload of the same part gets a different ETag. */
+static bool s_headers_imply_nondeterministic_part_etags(const struct aws_http_headers *headers) {
+    struct aws_byte_cursor sse_value;
+    if (aws_http_headers_get(headers, s_sse_header_name, &sse_value) == AWS_OP_SUCCESS &&
+        aws_byte_cursor_starts_with_ignore_case(&sse_value, &s_sse_kms_value_prefix)) {
+        return true;
+    }
+    return aws_http_headers_has(headers, s_sse_customer_algorithm_header_name);
+}
+
 /* Data for aws_s3_auto_ranged_put's async vtable->prepare_request() job */
 struct aws_s3_auto_ranged_put_prepare_request_job {
     struct aws_allocator *allocator;
@@ -478,6 +496,10 @@ struct aws_s3_meta_request *aws_s3_meta_request_auto_ranged_put_new(
     auto_ranged_put->threaded_update_data.next_part_number = 1;
     auto_ranged_put->synced_data.is_body_stream_at_end = false;
 
+    /* Covers uploads resumed from a token, which skip CreateMultipartUpload. Otherwise, its response tells us. */
+    auto_ranged_put->base.has_nondeterministic_part_etags =
+        s_headers_imply_nondeterministic_part_etags(aws_http_message_get_const_headers(options->message));
+
     uint32_t initial_num_parts = auto_ranged_put->has_content_length ? num_parts : s_unknown_length_default_num_parts;
 
     aws_array_list_init_dynamic(
@@ -571,11 +593,9 @@ static void s_s3_auto_ranged_put_send_request_finish(
     struct aws_http_stream *stream,
     int error_code) {
     struct aws_s3_request *request = connection->request;
-    if (request->request_tag == AWS_S3_AUTO_RANGED_PUT_REQUEST_TAG_PART && !request->meta_request->is_express) {
+    if (request->request_tag == AWS_S3_AUTO_RANGED_PUT_REQUEST_TAG_PART &&
+        aws_s3_meta_request_should_use_upload_part_timeout(request->meta_request)) {
         /* TODO: the single part upload may also be improved from a timeout as multipart. */
-        /* Note: For S3express, server responses random ETag. Killing the connection in the middle may cause server
-         * receive two same part and result in confusing during complete MPU with etag doesn't match.
-         * Disable the first byte timeout for s3 express.  */
         aws_s3_client_update_upload_part_timeout(request->meta_request->client, request, error_code);
     }
     aws_s3_meta_request_send_request_finish_default(connection, stream, error_code);
@@ -1704,6 +1724,12 @@ static void s_s3_auto_ranged_put_request_finished(
                         AWS_OP_SUCCESS) {
                         aws_http_headers_set(needed_response_headers, *header_name, header_value);
                     }
+                }
+
+                /* The response reflects the bucket's default encryption too, not just the request headers.
+                 * Set before any UploadPart request is created, as those wait for this request to complete. */
+                if (s_headers_imply_nondeterministic_part_etags(request->send_data.response_headers)) {
+                    meta_request->has_nondeterministic_part_etags = true;
                 }
 
                 struct aws_byte_cursor xml_doc = aws_byte_cursor_from_buf(&request->send_data.response_body);
